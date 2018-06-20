@@ -4,8 +4,7 @@ namespace cs_tcpnode
 {
     class Program
     {
-        static TcpNode serverNode = new TcpNode();
-        static TcpNode clientNode = new TcpNode();
+        static Zoro.TcpNodeIOCP clientNode = new Zoro.TcpNodeIOCP();
         static void InitThread()
         {
             System.Threading.Thread t = new System.Threading.Thread(() =>
@@ -13,16 +12,9 @@ namespace cs_tcpnode
                  while (true)
                  {
                      System.Threading.Thread.Sleep(1000);
-                     var _in = serverNode.inConnect.Count;
+                     var _in = clientNode.Connects.Count;
                      Console.Write("connect=" + _in);
 
-                     var _out = clientNode.outConnect.Count;
-                     Console.WriteLine(" linked=" + _out);
-
-                     foreach(var c in clientNode.outConnect.Values)
-                     {
-                         
-                     }
                  }
              });
             t.Start();
@@ -38,7 +30,7 @@ namespace cs_tcpnode
                 if (cmd == "s")
                 {
                     Console.WriteLine("start server");
-                    serverNode.Listen("127.0.0.1", 1234);
+                    clientNode.Listen("127.0.0.1", 1234);
                 }
                 if (cmd == "c")
                 {
@@ -48,7 +40,25 @@ namespace cs_tcpnode
                         clientNode.Connect("127.0.0.1", 1234);
                     }
                 }
+                if (cmd == "cs")
+                {
+                    foreach (long i in clientNode.Connects.Keys)
+                    {
+                        clientNode.CloseConnect(i);
+                    }
 
+                }
+                if (cmd == "css")
+                {
+                    foreach (var i in clientNode.Connects.Values)
+                    {
+                        if(i.InConnect==false)
+                        {
+                            clientNode.Send(i.Handle,System.Text.Encoding.UTF8.GetBytes("what a fuck."));
+                        }
+                       
+                    }
+                }
             }
         }
     }

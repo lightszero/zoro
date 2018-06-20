@@ -4,24 +4,45 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
-namespace cs_tcpnode
+namespace Zoro
 {
-
-    class TcpNodeIOCP
+    public class SocketInfo
     {
-        string tag = "";
-        Guid guid = Guid.NewGuid();
-        //System.Collections.Concurrent.ConcurrentStack<SocketAsyncEventArgs> eventArgs = new System.Collections.Concurrent.ConcurrentStack<SocketAsyncEventArgs>();
+        public SocketInfo(Socket socket, bool inConnect)
+        {
+            this.Socket = socket;
+            this.InConnect = inConnect;
+
+        }
+        public long Handle
+        {
+            get
+            {
+                return Socket.Handle.ToInt64();
+            }
+        }
+        public Socket Socket
+        {
+            get;
+            private set;
+        }
+        public bool InConnect//被动连接
+        {
+            get;
+            private set;
+        }
+    }
+    public class TcpNodeIOCP
+    {
+        System.Collections.Concurrent.ConcurrentStack<SocketAsyncEventArgs> freeEventArgs = new System.Collections.Concurrent.ConcurrentStack<SocketAsyncEventArgs>();
         Socket listenSocket = null;
-        public System.Collections.Concurrent.ConcurrentDictionary<Int64, Socket> inConnect = new System.Collections.Concurrent.ConcurrentDictionary<Int64, Socket>();
-        public System.Collections.Concurrent.ConcurrentDictionary<Int64, Socket> outConnect = new System.Collections.Concurrent.ConcurrentDictionary<Int64, Socket>();
+        public System.Collections.Concurrent.ConcurrentDictionary<Int64, SocketInfo> Connects = new System.Collections.Concurrent.ConcurrentDictionary<Int64, SocketInfo>();
         public TcpNodeIOCP()
         {
             InitEventArgs();
         }
         public void Listen(string ip, int port)
         {
-            tag = "listen";
             if (this.listenSocket != null)
             {
                 throw new Exception("already in listen");
@@ -29,7 +50,7 @@ namespace cs_tcpnode
             listenSocket = new Socket(SocketType.Stream, ProtocolType.Tcp);
             IPAddress ipAddress = IPAddress.Parse(ip);
             var endPoint = new IPEndPoint(ipAddress, port);
-            var arg = GetListenEventArgs();
+            var arg = GetEventArgs();
             listenSocket.Bind(endPoint);
             listenSocket.Listen(1024);
             listenSocket.AcceptAsync(arg);
@@ -40,11 +61,11 @@ namespace cs_tcpnode
             Socket socket = null;
 
             {
-                eventArgs = GetConnentEventArgs();
+                eventArgs = GetEventArgs();
                 socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
                 eventArgs.UserToken = socket;
             }
-        
+
 
             IPAddress ipAddress = IPAddress.Parse(ip);
             var endPoint = new IPEndPoint(ipAddress, port);
@@ -53,101 +74,109 @@ namespace cs_tcpnode
         }
         void InitEventArgs()
         {
-            //for (var i = 0; i < 1000; i++)
-            //{
-            //    eventArgs.Push(new SocketAsyncEventArgs());
-            //}
+            for (var i = 0; i < 1000; i++)
+            {
+                freeEventArgs.Push(new SocketAsyncEventArgs());
+            }
         }
 
-        SocketAsyncEventArgs GetListenEventArgs()
+        public event Action<long> onSocketIn;//有连接进来
+        public event Action<long> onSocketLinked;//我连接成了
+        public event Action<Socket> onSocketLinkedError;//我连接出错
+        public event Action<long,byte[]> onSocketRecv;
+
+        public void CloseConnect(long handle)
+        {
+            SocketAsyncEventArgs eventArgs = GetEventArgs();
+            eventArgs.UserToken = Connects[handle];
+            Connects[handle].Socket.DisconnectAsync(eventArgs);
+        }
+        public void Send(long handle, byte[] data)
+        {
+            var args = GetEventArgs();
+            args.UserToken = Connects[handle];
+            args.SetBuffer(data, 0, data.Length);
+            Connects[handle].Socket.SendAsync(args);
+        }
+        SocketAsyncEventArgs GetEventArgs()
         {
             SocketAsyncEventArgs outea = null;
-
-            outea = new SocketAsyncEventArgs();
-            if (outea.Buffer == null)
+            freeEventArgs.TryPop(out outea);
+            if (outea == null)
             {
-                byte[] buffer = new byte[1024];
-                outea.SetBuffer(buffer, 0, buffer.Length);
-                outea.Completed += this.onListenCompleted;
+                outea = new SocketAsyncEventArgs();
+                outea.Completed += this.onCompleted;
             }
             return outea;
         }
-        SocketAsyncEventArgs GetConnentEventArgs()
+        private void SetRecivce(SocketInfo info)
         {
-            SocketAsyncEventArgs outea = null;
-            outea = new SocketAsyncEventArgs();
-            if (outea.Buffer == null)
+            var recvargs = GetEventArgs();
+            if (recvargs.Buffer == null || recvargs.Buffer.Length != 1024)
             {
                 byte[] buffer = new byte[1024];
-                outea.SetBuffer(buffer, 0, buffer.Length);
-                outea.Completed += this.onConnectCompleted;
+                recvargs.SetBuffer(buffer, 0, 1024);
             }
-            return outea;
-
+            recvargs.UserToken = info;
+            info.Socket.ReceiveAsync(recvargs);
         }
-        private void onListenCompleted(object sender, SocketAsyncEventArgs args)
+        private void onCompleted(object sender, SocketAsyncEventArgs args)
         {
-            try
+            //try
             {
                 switch (args.LastOperation)
                 {
                     case SocketAsyncOperation.Accept:
                         {
-                            var hash = args.AcceptSocket.Handle.ToInt64();
-                            inConnect[hash] = args.AcceptSocket;
+                            var info = new SocketInfo(args.AcceptSocket, true);
+                            Connects[info.Handle] = info;
 
+                            //直接复用
                             args.AcceptSocket = null;
                             listenSocket.AcceptAsync(args);
 
-                           
+                            onSocketIn?.Invoke(info.Handle);
 
+                            SetRecivce(info);
                         }
                         break;
-                    case SocketAsyncOperation.Disconnect:
-                        {
-                            var hash = args.AcceptSocket.Handle.ToInt64();
-                            Socket socket = null;
-                            inConnect.TryRemove(hash, out socket);
-                        }
-                        break;
-                    case SocketAsyncOperation.Receive:
-                        {
-
-                        }
-                        break;
-                    default:
-                        {
-
-                        }
-                        break;
-                }
-            }
-            catch(Exception err)
-            {
-
-            }
-        }
-        private void onConnectCompleted(object sender, SocketAsyncEventArgs args)
-        {
-
-            try
-            {
-                switch (args.LastOperation)
-                {
                     case SocketAsyncOperation.Connect:
                         {
-                            var hash = args.ConnectSocket.Handle.ToInt64();
-                            outConnect[hash] = args.ConnectSocket;
+                            if (args.SocketError != SocketError.Success)
+                            {
+                                onSocketLinkedError?.Invoke(args.UserToken as Socket);
+                            }
+                            else
+                            {
+                                var info = new SocketInfo(args.ConnectSocket, false);
+                                Connects[info.Handle] = info;
 
+                                onSocketLinked?.Invoke(info.Handle);
+
+                                SetRecivce(info);
+                            }
+                            //connect 的这个args不能复用
                         }
                         break;
                     case SocketAsyncOperation.Disconnect:
                         {
+                            var hash = (args.UserToken as SocketInfo).Handle;
+                            SocketInfo socket = null;
+                            Connects.TryRemove(hash, out socket);
+                            socket.Socket.Dispose();
+
+                            freeEventArgs.Push(args);//这个是可以复用的
                         }
                         break;
                     case SocketAsyncOperation.Receive:
                         {
+                            var hash = (args.UserToken as SocketInfo).Handle;
+                            byte[] recv = new byte[args.BytesTransferred];
+                            Buffer.BlockCopy(args.Buffer, 0, recv, 0, args.BytesTransferred);
 
+                            onSocketRecv?.Invoke(hash, recv);
+
+                            freeEventArgs.Push(args);//这个是可以复用的
                         }
                         break;
                     default:
@@ -157,10 +186,10 @@ namespace cs_tcpnode
                         break;
                 }
             }
-            catch(Exception err)
-            {
-                
-            }
+            //catch (Exception err)
+            //{
+
+            //}
         }
 
     }
